@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบจับเวลาลูกค้า</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        h1 { color: #FF6B3B; margin-bottom: 20px; }
+        .table-container { margin-bottom: 20px; padding: 20px; width: 90%; max-width: 600px; background-color: #fff; box-shadow: 0px 6px 12px rgba(0, 0, 0, 0.1); border-radius: 10px; border-left: 8px solid #FF6B3B; }
+        .customer-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .customer-row:last-child { border-bottom: none; }
+        .timer { font-weight: bold; color: #FF6B3B; }
+        button { background-color: #FF6B3B; color: white; padding: 6px 12px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; transition: background-color 0.2s; font-size: 14px; }
+        button:hover { background-color: #e55a30; }
+        .table-title { font-size: 18px; font-weight: bold; color: #FF6B3B; margin-bottom: 10px; }
+        .button-group { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+    </style>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.14.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.14.0/firebase-database.js"></script>
+    <script>
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyA_nmTZZXJhuC5vp5JuE0Qwikv6L5ffv60",
+            authDomain: "loaddice-time.firebaseapp.com",
+            databaseURL: "https://loaddice-time-default-rtdb.firebaseio.com",
+            projectId: "loaddice-time",
+            storageBucket: "loaddice-time.appspot.com",
+            messagingSenderId: "131473092650",
+            appId: "1:131473092650:web:a5ee2d369a8ac91d23d353",
+            measurementId: "G-RLCTZKKXT4"
+        };
+        // Initialize Firebase
+        const app = firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+    </script>
+</head>
+<body>
+    <h1>ระบบจับเวลาลูกค้าแต่ละโต๊ะ</h1>
+    <div id="tables"></div>
+    <button onclick="addTable()">เพิ่มโต๊ะ</button>
+
+    <script>
+        var tableCount = 0;
+        var timers = {};
+        var worker = new Worker('worker.js');
+
+        worker.onmessage = function(e) {
+            const { customerId, seconds } = e.data;
+            document.getElementById("timer-" + customerId).innerText = formatTime(seconds);
+        };
+
+        function addTable() {
+            tableCount++;
+            var tableId = "table-" + tableCount;
+            var tableContainer = document.createElement("div");
+            tableContainer.className = "table-container";
+            tableContainer.id = tableId;
+
+            tableContainer.innerHTML = `
+                <h2 class="table-title">โต๊ะ ${tableCount}</h2>
+                <div id="customers-${tableId}"></div>
+                <div class="button-group">
+                    <button onclick="addCustomer('${tableId}')">เพิ่มลูกค้า</button>
+                    <button onclick="startAllTimers('${tableId}')">เริ่มเวลาทุกคน</button>
+                    <button onclick="stopAllTimers('${tableId}')">หยุดเวลาทุกคน</button>
+                    <button onclick="resetAllTimers('${tableId}')">รีเซ็ตเวลาทุกคน</button>
+                </div>
+            `;
+
+            document.getElementById("tables").appendChild(tableContainer);
+            timers[tableId] = { customerCount: 0 };
+        }
+
+        function addCustomer(tableId) {
+            timers[tableId].customerCount++;
+            var customerNumber = timers[tableId].customerCount;
+            var customerId = tableId + "-customer-" + customerNumber;
+            var customerRow = document.createElement("div");
+            customerRow.className = "customer-row";
+            customerRow.id = customerId;
+
+            customerRow.innerHTML = `
+                <span>Q${customerNumber}</span>
+                <span class="timer" id="timer-${customerId}">00:00:00</span>
+                <button onclick="startTimer('${customerId}')">เริ่ม</button>
+                <button onclick="stopTimer('${customerId}')">หยุด</button>
+                <button onclick="resetTimer('${customerId}')">รีเซ็ต</button>
+                <button onclick="removeCustomer('${customerId}', '${tableId}')">ลบ</button>
+            `;
+
+            document.getElementById("customers-" + tableId).appendChild(customerRow);
+            timers[customerId] = { interval: null, seconds: 0 };
+        }
+
+        function startTimer(customerId) {
+            const startTime = Date.now();
+            worker.postMessage({ action: 'start', customerId });
+
+            // บันทึกสถานะเวลาเริ่มต้นใน Firebase
+            firebase.database().ref('timers/' + customerId).set({
+                startTime: startTime,
+                status: 'active'
+            });
+        }
+
+        function stopTimer(customerId) {
+            const endTime = Date.now();
+            worker.postMessage({ action: 'stop', customerId });
+
+            // อัปเดตสถานะหยุดเวลาใน Firebase
+            firebase.database().ref('timers/' + customerId).update({
+                endTime: endTime,
+                status: 'stopped'
+            });
+        }
+
+        function resetTimer(customerId) {
+            worker.postMessage({ action: 'reset', customerId });
+
+            // รีเซ็ตเวลาใน Firebase
+            firebase.database().ref('timers/' + customerId).update({
+                startTime: null,
+                endTime: null,
+                status: 'reset'
+            });
+        }
+
+        function removeCustomer(customerId, tableId) {
+            stopTimer(customerId);
+            delete timers[customerId];
+            var customerRow = document.getElementById(customerId);
+            customerRow.parentNode.removeChild(customerRow);
+
+            // ลบข้อมูลใน Firebase
+            firebase.database().ref('timers/' + customerId).remove();
+        }
+
+        function startAllTimers(tableId) {
+            var customers = document.getElementById("customers-" + tableId).children;
+            for (var i = 0; i < customers.length; i++) {
+                startTimer(customers[i].id);
+            }
+        }
+
+        function stopAllTimers(tableId) {
+            var customers = document.getElementById("customers-" + tableId).children;
+            for (var i = 0; i < customers.length; i++) {
+                stopTimer(customers[i].id);
+            }
+        }
+
+        function resetAllTimers(tableId) {
+            var customers = document.getElementById("customers-" + tableId).children;
+            for (var i = 0; i < customers.length; i++) {
+                resetTimer(customers[i].id);
+            }
+        }
+
+        function formatTime(seconds) {
+            var hrs = String(Math.floor(seconds / 3600)).padStart(2, '0');
+            var mins = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
+            var secs = String(seconds % 60).padStart(2, '0');
+            return hrs + ":" + mins + ":" + secs;
+        }
+
+        // ดึงข้อมูลจาก Firebase และอัปเดต UI เมื่อมีการเปลี่ยนแปลง
+        firebase.database().ref('timers').on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                Object.keys(data).forEach(customerId => {
+                    const timerData = data[customerId];
+                    if (timerData.status === 'active' && timerData.startTime) {
+                        const secondsElapsed = Math.floor((Date.now() - timerData.startTime) / 1000);
+                        document.getElementById("timer-" + customerId).innerText = formatTime(secondsElapsed);
+                    } else if (timerData.status === 'stopped' && timerData.endTime) {
+                        const totalSeconds = Math.floor((timerData.endTime - timerData.startTime) / 1000);
+                        document.getElementById("timer-" + customerId).innerText = formatTime(totalSeconds);
+                    } else if (timerData.status === 'reset') {
+                        document.getElementById("timer-" + customerId).innerText = "00:00:00";
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
